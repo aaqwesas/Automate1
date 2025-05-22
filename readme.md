@@ -75,7 +75,6 @@ python -m venv venv
 ### 4. **Install Required Packages**
 
 ```bash
-pip freeze > requirements.txt
 pip install -r requirements.txt
 ```
 
