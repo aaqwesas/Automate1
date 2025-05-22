@@ -51,8 +51,8 @@ project_root/
 ### 1. **Clone or Download This Repository**
 
 ```bash
-git clone
-cd
+git clone https://github.com/aaqwesas/Automate1.git
+cd Automate1/
 ```
 
 ### 2. **Create a Python Virtual Environment**
