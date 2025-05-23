@@ -3,11 +3,40 @@ from PyPDF2 import PdfMerger, PdfReader, PdfWriter
 import glob
 import shutil
 import os
+import re
+import logging
 
 
+logging.basicConfig(
+    level=logging.ERROR,
+    filename="app_errors.log",
+    filemode="w",
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+
+
+def error_handler(func):
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            # Unified error handling
+            logging.error(
+                f"An error occurred in '{func.__name__}': {str(e)}", exc_info=True
+            )
+            raise e
+
+    return wrapper
+
+
+@error_handler
 def split_pdf_to_pages(
     combined_pdf_path, output_folder, name_list, course_code, prefix
 ):
+    if not os.path.exists(combined_pdf_path):
+        print(f"No combined PDF file found in {combined_pdf_path}.")
+        return
+
     os.makedirs(output_folder, exist_ok=True)
     reader = PdfReader(combined_pdf_path)
 
@@ -20,9 +49,7 @@ def split_pdf_to_pages(
     for page_num, name in enumerate(name_list):
         writer = PdfWriter()
         writer.add_page(reader.pages[page_num])
-        safe_name = "".join(
-            c for c in str(name) if c.isalnum() or c in (" ", "_", "-", ".")
-        ).rstrip()
+        safe_name = re.sub(r"[^\w\-_\. ]", "", str(name)).strip()
         output_filename = os.path.join(
             output_folder, f"{safe_name}_{course_code}_{prefix}.pdf"
         )
@@ -33,8 +60,12 @@ def split_pdf_to_pages(
     return output_files
 
 
+@error_handler
 def merge_pdfs(pdf_files, output_file):
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    if not pdf_files:
+        print("No PDF files found in the given path")
+        return
     merger = PdfMerger()
     for pdf_file in pdf_files:
         merger.append(pdf_file)
@@ -42,14 +73,15 @@ def merge_pdfs(pdf_files, output_file):
     merger.close()
 
 
+@error_handler
 def main():
     csv_files = glob.glob("data/*.csv")  # this will automatically match your csv file
     if not csv_files:
         print("No CSV files found in the 'data' folder.")
         return
     file_path = csv_files[0]
-    df = pd.read_csv(file_path)  # read the first CSV file
-    course_code = df["Course Code"][1]
+    df = pd.read_csv(file_path)
+    course_code = df["Course Code"].iloc[0]
     start_row = 0  # this is the row where the participant names start, modify as needed
     name_list = []
     name_list = [row["User Name"].strip() for _, row in df.iloc[start_row:].iterrows()]
@@ -77,22 +109,16 @@ def main():
     )
 
     # Convert Certificate_Result to a zip file
-    shutil.make_archive("Certificate_Result", "zip", "Certificate_Result")
-    print("Created Certificate_Result.zip")
+    for folder in ("Certificate_Result", "Receipt_Result"):
+        if os.path.exists(folder) and os.listdir(folder):
+            shutil.make_archive(folder, "zip", folder)
+            print(f"Created {folder}.zip")
+        else:
+            print(f"No files found in {folder} folder. Skipping zip creation.")
 
-    # Convert Receipt_Result to a zip file
-    shutil.make_archive("Receipt_Result", "zip", "Receipt_Result")
-    print("Created Receipt_Result.zip")
-
-    # # Delete the Certificate_Result and Receipt_Result folders
-    # shutil.rmtree("Certificate_Result")
-    # print("Deleted Certificate_Result folder")
-    # shutil.rmtree("Receipt_Result")
-    # print("Deleted Receipt_Result folder")
-
-    # Delete the combined folder (comment this if you don't want to delete the combined folder)
-    shutil.rmtree("combined")
-    print("Deleted combined folder")
+    # if os.path.exists("combined"):
+    #     shutil.rmtree("combined")
+    #     print("Deleted combined folder")
 
     print("Done!")
 
