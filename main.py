@@ -75,7 +75,6 @@ def validate_length(names: list[str], pages: list) -> Result:
 
 
 def ensure_dir(path: str) -> None:
-    """Ensure that a directory exists."""
     os.makedirs(path, exist_ok=True)
 
 
@@ -85,7 +84,6 @@ def remove_folder(folder_path: str) -> None:
 
 
 def list_files(pattern: str) -> list[str]:
-    """Return a list of file paths matching the given glob pattern."""
     return glob.glob(pattern)
 
 
