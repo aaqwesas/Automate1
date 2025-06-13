@@ -8,25 +8,46 @@ import logging
 from functools import wraps
 
 logging.basicConfig(
-    level=logging.ERROR,
-    filename="app_errors.log",
-    filemode="w",
-    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+# functional error handling
+class Result:
+    def __init__(self, is_ok, value):
+        self.is_ok = is_ok
+        self.value = value
+
+    def __repr__(self):
+        return f"Ok({self.value})" if self.is_ok else f"Error({self.value})"
+
+    @staticmethod
+    def ok(value):
+        return Result(True, value)
+
+    @staticmethod
+    def error(error_value):
+        return Result(False, error_value)
+
+    def bind(self, func):
+        if not self.is_ok:
+            return self
+        try:
+            return func(self.value)
+        except Exception as e:
+            return Result.error(str(e))
 
 
 def logging_decorator(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         try:
-            logger.info(f"Running {func.__name__} with args: {args}, kwargs: {kwargs}")
             result = func(*args, **kwargs)
             logger.info(f"Result from {func.__name__}: {result}")
             return result
         except Exception as e:
-            logger.error(f"Error in {func.__name__}: {e}")
-            raise
+            return Result.error(f"Error in {func.__name__}: {e}")
 
     return wrapper
 
@@ -40,11 +61,12 @@ def clean_filename(name: str) -> str:
     return re.sub(r"[^\w\-_\. ]", "", name).strip()
 
 
-def validate_length(names: list[str], pages: list) -> None:
+def validate_length(names: list[str], pages: list) -> Result:
     if len(names) != len(pages):
-        raise ValueError(
-            f"Length of name_list ({len(names)}) does not match number of PDF pages ({len(pages)})"
+        return Result.error(
+            "The number of participant names does not match the number of pages"
         )
+    return Result.ok(None)
 
 
 # -----------------------
@@ -58,7 +80,6 @@ def ensure_dir(path: str) -> None:
 
 
 def remove_folder(folder_path: str) -> None:
-    """Remove a folder if it exists."""
     if os.path.exists(folder_path):
         shutil.rmtree(folder_path)
 
@@ -68,12 +89,11 @@ def list_files(pattern: str) -> list[str]:
     return glob.glob(pattern)
 
 
-def check_pdf_path(path: str) -> bool:
+def check_pdf_path(path: str) -> Result:
     """Check if the PDF file exists."""
     if not os.path.exists(path):
-        logger.info(f"No PDF file found in {path}.")
-        return False
-    return True
+        return Result.error(f"PDF file not found: {path}")
+    return Result.ok(path)
 
 
 # -----------------------
@@ -82,38 +102,34 @@ def check_pdf_path(path: str) -> bool:
 
 
 @logging_decorator
-def merge_pdfs(pdf_files: list[str], output_file: str) -> str:
-    """Merge a list of PDF files into one PDF file."""
-    ensure_dir(os.path.dirname(output_file))
-    if not pdf_files:
-        print("No PDF files found to merge.")
-        return ""
-    merger = PdfMerger()
-    for pdf_file in pdf_files:
-        merger.append(pdf_file)
-    merger.write(output_file)
-    merger.close()
-    return output_file
+def merge_pdfs(pdf_files: list[str], output_file: str) -> Result:
+    try:
+        merger = PdfMerger()
+        for pdf_file in pdf_files:
+            merger.append(pdf_file)
+        merger.write(output_file)
+        merger.close()
+        return Result.ok(output_file)
+    except Exception as e:
+        return Result.error(f"Error merging PDFs: {e}")
 
 
-@logging_decorator
-def split_pdf_to_pages(
+def safe_split_pdf(
     combined_pdf_path: str,
     output_folder: str,
     name_list: list[str],
     course_code: str,
     prefix: str,
-) -> list[str]:
-    """
-    Split a combined PDF into individual files by page.
-    Each file is named using a value from name_list along with course_code and prefix.
-    """
-    if not check_pdf_path(combined_pdf_path):
-        return []
+) -> Result:
+    try:
+        reader = PdfReader(combined_pdf_path)
+    except Exception as e:
+        return Result.error(f"Error reading PDF: {e}")
 
-    ensure_dir(output_folder)
-    reader = PdfReader(combined_pdf_path)
-    validate_length(name_list, reader.pages)
+    # Validate that the number of names matches the number of PDF pages.
+    res = validate_length(name_list, reader.pages)
+    if not res.is_ok:
+        return res
 
     def write_page(page_info):
         i, name = page_info
@@ -127,7 +143,27 @@ def split_pdf_to_pages(
             writer.write(f)
         return output_filename
 
-    return list(map(write_page, enumerate(name_list)))
+    try:
+        # Lazy evaluation
+        list(map(write_page, enumerate(name_list)))
+        return Result.ok(None)
+    except Exception as e:
+        return Result.error(f"Error splitting PDF pages: {e}")
+
+
+@logging_decorator
+def split_pdf_to_pages(
+    combined_pdf_path: str,
+    output_folder: str,
+    name_list: list[str],
+    course_code: str,
+    prefix: str,
+) -> Result:
+    return check_pdf_path(combined_pdf_path).bind(
+        lambda _: safe_split_pdf(
+            combined_pdf_path, output_folder, name_list, course_code, prefix
+        )
+    )
 
 
 # -----------------------
@@ -136,7 +172,6 @@ def split_pdf_to_pages(
 
 
 def extract_names_from_csv(csv_file: str, start_row: int = 0) -> list[str]:
-    """Extract the 'User Name' field from CSV rows starting at start_row."""
     df = pd.read_csv(csv_file)
     return [str(row["User Name"]).strip() for _, row in df.iloc[start_row:].iterrows()]
 
@@ -146,12 +181,15 @@ def extract_names_from_csv(csv_file: str, start_row: int = 0) -> list[str]:
 # -----------------------
 
 
-@logging_decorator
-def create_zip_from_folder(folder: str) -> str:
+def create_zip_from_folder(folder: str) -> Result:
     """Create a ZIP archive of the specified folder if it contains files."""
     if os.path.exists(folder) and os.listdir(folder):
-        return shutil.make_archive(folder, "zip", folder)
-    return ""
+        try:
+            zip_path = shutil.make_archive(folder, "zip", folder)
+            return Result.ok(zip_path)
+        except Exception as e:
+            return Result.error(f"Error creating zip archive for {folder}: {e}")
+    return Result.error(f"No files found in {folder}")
 
 
 # -----------------------
@@ -159,56 +197,82 @@ def create_zip_from_folder(folder: str) -> str:
 # -----------------------
 
 
-def main():
+@logging_decorator
+def main() -> Result | None:
     # 1. Get the CSV file and extract names.
     csv_files = list_files(os.path.join("data", "*.csv"))
     if not csv_files:
-        print("No CSV files found in the 'data' folder.")
-        return
+        return Result.error("No CSV file found")
     csv_file = csv_files[0]
     name_list = extract_names_from_csv(csv_file)
 
-    # 2. Get the course code from user input.
+    # 2. Get the course code from user input and define output folder names.
     course_code = input("Enter the course code: ").strip()
+    output_folders = {
+        "cert": f"Certificate_{course_code}",
+        "receipt": f"Receipt_{course_code}",
+        "combined": f"combined_{course_code}",
+    }
 
-    # 3. Create lists of certificate and receipt PDF files.
+    # Create all necessary directories.
+    for folder in output_folders.values():
+        ensure_dir(folder)
+
+    # 3. Get lists of certificate and receipt PDF files.
     cert_list = list_files(os.path.join("data", "Certificate", "*.pdf"))
     receipt_list = list_files(os.path.join("data", "Receipt", "*.pdf"))
 
     # 4. Merge PDFs for certificates and receipts.
-    combined_cert = merge_pdfs(
-        cert_list, os.path.join("combined", "combined_certificates.pdf")
+    combined_cert_file = os.path.join(
+        output_folders["combined"], "combined_certificates.pdf"
     )
-    combined_receipt = merge_pdfs(
-        receipt_list, os.path.join("combined", "combined_receipts.pdf")
-    )
-
-    # 5. Split the combined PDFs into individual pages using the name list.
-    split_pdf_to_pages(
-        combined_pdf_path=combined_cert,
-        output_folder="Certificate_Result",
-        name_list=name_list,
-        course_code=course_code,
-        prefix="Certificate",
-    )
-    split_pdf_to_pages(
-        combined_pdf_path=combined_receipt,
-        output_folder="Receipt_Result",
-        name_list=name_list,
-        course_code=course_code,
-        prefix="Receipt",
+    combined_receipt_file = os.path.join(
+        output_folders["combined"], "combined_receipts.pdf"
     )
 
-    # 6. Archive the result folders as ZIP files.
-    for folder in ("Certificate_Result", "Receipt_Result"):
-        zip_archive = create_zip_from_folder(folder)
-        if zip_archive:
-            print(f"Created zip archive: {zip_archive}")
+    res_cert_merge = merge_pdfs(cert_list, combined_cert_file)
+    if not res_cert_merge.is_ok:
+        return Result.error(f"Error merging certificates: {res_cert_merge.value}")
+
+    res_receipt_merge = merge_pdfs(receipt_list, combined_receipt_file)
+    if not res_receipt_merge.is_ok:
+        return Result.error(f"Error merging receipts: {res_receipt_merge.value}")
+
+    # 5. Split the combined PDFs into individual pages.
+    res_cert_split = split_pdf_to_pages(
+        combined_cert_file,
+        output_folders["cert"],
+        name_list,
+        course_code,
+        "Certificate",
+    )
+    if not res_cert_split.is_ok:
+        return Result.error(f"Error splitting certificate PDF: {res_cert_split.value}")
+
+    res_receipt_split = split_pdf_to_pages(
+        combined_receipt_file,
+        output_folders["receipt"],
+        name_list,
+        course_code,
+        "Receipt",
+    )
+    if not res_receipt_split.is_ok:
+        return Result.error(f"Error splitting receipt PDF: {res_receipt_split.value}")
+
+    # 6. Archive each of the output folders.
+    for folder in output_folders.values():
+        if folder == output_folders["combined"]:
+            continue
+        res_zip = create_zip_from_folder(folder)
+        if res_zip.is_ok:
+            logger.info(f"Created zip archive: {res_zip.value}")
         else:
-            print(f"No files found in {folder}. Skipping zip creation.")
+            logger.warning(
+                f"ZIP archive creation skipped for {folder}: {res_zip.value}"
+            )
 
-    # 7. Clean up temporary folders.
-    for folder in ("combined", "Certificate_Result", "Receipt_Result"):
+    # 7. Clean up the temporary folders
+    for folder in output_folders.values():
         remove_folder(folder)
 
 
