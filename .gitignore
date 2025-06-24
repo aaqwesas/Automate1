@@ -1,0 +1,7 @@
+my-venv/
+data/
+Certificate_Result/
+Receipt_Result/
+combined/
+*.zip
+*.log
