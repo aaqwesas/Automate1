@@ -142,7 +142,6 @@ def safe_split_pdf(
         return output_filename
 
     try:
-        # Lazy evaluation
         list(map(write_page, enumerate(name_list)))
         return Result.ok(None)
     except Exception as e:
